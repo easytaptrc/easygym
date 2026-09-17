@@ -1,0 +1,695 @@
+rules_version = '2';
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EasyGym — Reglas de seguridad de Firestore
+//
+// LAS CUATRO GARANTÍAS QUE DA ESTE ARCHIVO
+//
+//  1. AISLAMIENTO   Ningún gimnasio lee ni escribe datos de otro. El gymId
+//                   que manda el navegador NUNCA se cree: se compara contra
+//                   el del usuario autenticado, que vive en custom claims
+//                   (los firma una Cloud Function) o en /users/{uid}, un
+//                   documento que el propio usuario no puede editar.
+//
+//  2. ROLES         Cada rol puede exactamente lo que le toca. Un
+//                   recepcionista cobra pero no cambia la configuración; un
+//                   entrenador gestiona clases pero no toca el dinero.
+//
+//  3. PLAN          Las funcionalidades de pago se comprueban AQUÍ, no solo
+//                   en la interfaz. Un gimnasio Starter que escriba a mano
+//                   en /reservaciones recibe permission-denied del servidor.
+//                   Se leen de gyms/{gymId}.entitlements.features, la copia
+//                   que el servidor mantiene desde plans/{planId}.
+//
+//  4. SUSCRIPCIÓN   Un gimnasio SUSPENDED o CANCELED puede LEER todo lo suyo
+//                   pero no registrar nada nuevo. Restringir no es borrar:
+//                   sus datos siguen ahí y vuelven en cuanto pague.
+//
+// SOBRE `delete`
+// En un borrado `request.resource` es null. Las condiciones de inmutabilidad
+// van SOLO en `update`: evaluarlas al borrar deniega la operación siempre.
+//
+// Desplegar:  firebase deploy --only firestore:rules
+// Probar:     npm run test:rules   (requiere Java + emulador)
+// ═══════════════════════════════════════════════════════════════════════════
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ═══════════════════ 1 · Identidad del que escribe ═══════════════════
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function claims() {
+      return request.auth.token;
+    }
+
+    function userPath() {
+      return /databases/$(database)/documents/users/$(request.auth.uid);
+    }
+
+    function userDoc() {
+      return get(userPath()).data;
+    }
+
+    function userDocExists() {
+      return exists(userPath());
+    }
+
+    // Rol efectivo. El custom claim manda; el documento /users es el respaldo
+    // mientras el token se refresca (hasta una hora, o hasta getIdToken(true)).
+    function myRole() {
+      return isAuthenticated()
+        ? (claims().role != null ? claims().role : (userDocExists() ? userDoc().role : 'NONE'))
+        : 'NONE';
+    }
+
+    // Tenant efectivo del usuario autenticado.
+    function myGym() {
+      return isAuthenticated()
+        ? (claims().gymId != null ? claims().gymId : (userDocExists() ? userDoc().gymId : ''))
+        : '';
+    }
+
+    function isSuperAdmin() {
+      return myRole() == 'SUPERADMIN';
+    }
+
+    function hasRole(roles) {
+      return myRole() in roles;
+    }
+
+    // ¿El usuario pertenece REALMENTE a este gimnasio?
+    function belongsToGym(gymId) {
+      return isAuthenticated() && gymId is string && gymId != '' && myGym() == gymId;
+    }
+
+    function isStaffOf(gymId) {
+      return belongsToGym(gymId) && hasRole(['OWNER', 'ADMIN', 'RECEPCIONISTA', 'ENTRENADOR']);
+    }
+
+    function isManagerOf(gymId) {
+      return belongsToGym(gymId) && hasRole(['OWNER', 'ADMIN']);
+    }
+
+    function isTrainerOf(gymId) {
+      return belongsToGym(gymId) && hasRole(['OWNER', 'ADMIN', 'ENTRENADOR']);
+    }
+
+    function isCashierOf(gymId) {
+      return belongsToGym(gymId) && hasRole(['OWNER', 'ADMIN', 'RECEPCIONISTA']);
+    }
+
+    function isOwnerOf(gymId) {
+      return belongsToGym(gymId) && myRole() == 'OWNER';
+    }
+
+    // ── Operación interna (Fase 4) ──
+    //
+    // MANTENIMIENTO queda FUERA de `isStaffOf` a propósito. Adrián entra desde
+    // su teléfono a ver qué insumos le piden: no tiene por qué leer el padrón
+    // de socios, ni los pagos, ni la asistencia de sus compañeros. Darle
+    // `isStaffOf` sería regalarle todo eso de una sola vez.
+    function isMaintenanceOf(gymId) {
+      return belongsToGym(gymId) && myRole() == 'MANTENIMIENTO';
+    }
+
+    /** Quien puede ver y mover solicitudes de insumos: personal + mantenimiento. */
+    function worksAt(gymId) {
+      return isStaffOf(gymId) || isMaintenanceOf(gymId);
+    }
+
+    // ¿Este usuario es el socio dueño de este documento?
+    function isSelfMember(memberId) {
+      return isAuthenticated() && userDocExists() && userDoc().memberId == memberId;
+    }
+
+    // ═════════════════ 2 · Plan y estado de la suscripción ════════════════
+
+    function gymDoc(gymId) {
+      return get(/databases/$(database)/documents/gyms/$(gymId)).data;
+    }
+
+    /**
+     * ¿El plan de este gimnasio incluye esta funcionalidad?
+     *
+     * Lee la copia desnormalizada dentro del documento del gimnasio. Si aún no
+     * existe (gimnasio antiguo o recién creado) se permite, para no romper a
+     * quien todavía no fue migrado; en cuanto el trigger escribe entitlements,
+     * la comprobación pasa a ser estricta.
+     */
+    function planAllows(gymId, feature) {
+      let g = gymDoc(gymId);
+      return !('entitlements' in g)
+          || !('features' in g.entitlements)
+          || g.entitlements.features.get(feature, false) == true;
+    }
+
+    /**
+     * ¿Puede este gimnasio registrar operaciones nuevas?
+     * SUSPENDED y CANCELED conservan la LECTURA pero no la escritura.
+     * PAST_DUE sigue operando: un cargo rechazado no puede dejar a un negocio
+     * sin poder cobrar a sus socios.
+     */
+    function subscriptionAllowsWrites(gymId) {
+      let status = gymDoc(gymId).subscriptionStatus;
+      return status != 'SUSPENDED' && status != 'CANCELED';
+    }
+
+    /** Límite del plan, con `null` = ilimitado. */
+    function planLimit(gymId, key) {
+      let g = gymDoc(gymId);
+      return ('entitlements' in g) ? g.entitlements.get(key, null) : null;
+    }
+
+    function memberCount(gymId) {
+      let path = /databases/$(database)/documents/counters/$(gymId);
+      return exists(path) ? get(path).data.members.total : 0;
+    }
+
+    /** ¿Queda cupo de socios en el plan? */
+    function underMemberLimit(gymId) {
+      let max = planLimit(gymId, 'maxMembers');
+      return max == null || memberCount(gymId) < max;
+    }
+
+    // ═══════════════════════ 3 · Helpers de tenant ═══════════════════════
+
+    // En una creación, el gymId del documento debe ser el del usuario, el plan
+    // debe incluir la funcionalidad y la suscripción debe permitir escrituras.
+    function canCreateIn(feature) {
+      let gymId = request.resource.data.gymId;
+      return gymId is string
+          && belongsToGym(gymId)
+          && subscriptionAllowsWrites(gymId)
+          && planAllows(gymId, feature);
+    }
+
+    function canWriteExisting(feature) {
+      let gymId = resource.data.gymId;
+      return subscriptionAllowsWrites(gymId) && planAllows(gymId, feature);
+    }
+
+    // El gymId de un documento no cambia jamás. SOLO para `update`.
+    function gymIdUnchanged() {
+      return request.resource.data.gymId == resource.data.gymId;
+    }
+
+    // Lectura de un documento multi-tenant. Firestore evalúa esto contra CADA
+    // documento devuelto, así que un listado sin where('gymId','==',…) es
+    // rechazado por el servidor, no solo por la interfaz.
+    //
+    // Exige rol de PERSONAL, no solo pertenecer al gimnasio.
+    //
+    // Antes usaba `belongsToGym()`, y eso incluía a los SOCIOS: cualquiera con
+    // cuenta de portal podía leer el padrón completo de su gimnasio —nombres,
+    // correos, teléfonos y vigencias—, todos los pagos, todas las visitas y los
+    // ingresos del día. Lo detectaron las pruebas de reglas (TEST 7).
+    //
+    // Los socios no pierden nada: cada colección que necesitan lleva su propia
+    // cláusula `isSelfMember(...)` para lo suyo, o una de
+    // `isAuthenticated() && belongsToGym(...)` para los catálogos que sí son
+    // compartidos (membresías, clases, bicicletas, productos, sucursales).
+    function canReadTenantDoc() {
+      return isSuperAdmin() || (resource.data.gymId is string && isStaffOf(resource.data.gymId));
+    }
+
+    // ═════════════════ 4 · Lectura pública (sin sesión) ═══════════════════
+
+    // ESPEJO PÚBLICO: nombre, dirección, teléfono, color y lista de precios.
+    // Es lo ÚNICO que se lee sin estar autenticado, y por eso es una colección
+    // aparte: el documento real de `gyms` lleva el correo del dueño, su
+    // ownerId, el estado de su suscripción y sus contadores.
+    match /publicGyms/{gymId} {
+      allow get, list: if true;
+      // ▸ PRODUCCIÓN: `if false`. Lo escribe functions/src/publicGym.ts
+      allow write: if isSuperAdmin() || isManagerOf(gymId);
+    }
+
+    // ══════════════════ 5 · Colecciones de plataforma ════════════════════
+
+    // Catálogo de planes.
+    //
+    // LECTURA PÚBLICA A PROPÓSITO — es el segundo y último `if true` de este
+    // archivo. La página de precios se ve SIN sesión: alguien que todavía no es
+    // cliente tiene que poder comparar planes antes de registrarse. Aquí no hay
+    // datos de nadie: nombre, precio, límites y qué incluye cada paquete. Es
+    // exactamente la misma información que va impresa en la landing.
+    //
+    // ESCRITURA SOLO DEL SUPERADMIN, y eso sí es crítico: este documento decide
+    // qué puede hacer cada gimnasio. Si un OWNER pudiera editarlo, se regalaría
+    // el plan Business para todos los gimnasios de ese plan, no solo el suyo.
+    match /plans/{planId} {
+      allow get, list: if true;
+      allow write: if isSuperAdmin();
+    }
+
+    // Gimnasios (tenants). No hay lectura pública: para eso está `publicGyms`.
+    match /gyms/{gymId} {
+      allow get: if isAuthenticated() && (isSuperAdmin() || belongsToGym(gymId));
+      allow list: if isSuperAdmin();
+
+      // ▸ PRODUCCIÓN: `if false`. Lo crea functions/src/provisionTenant.ts
+      //   tras verificar el pago. Mientras esté abierto, cualquiera con una
+      //   sesión puede fabricarse un gimnasio.
+      allow create: if isAuthenticated()
+                    && request.resource.data.ownerId == request.auth.uid
+                    && request.resource.data.id == gymId;
+
+      allow update: if isSuperAdmin()
+                    || (isOwnerOf(gymId)
+                        // El dueño NO se cambia solo de plan, ni de estado de
+                        // suscripción, ni se toca sus propios entitlements:
+                        // eso lo hacen el webhook de Stripe y el SuperAdmin.
+                        && request.resource.data.planId == resource.data.planId
+                        && request.resource.data.subscriptionStatus == resource.data.subscriptionStatus
+                        && request.resource.data.ownerId == resource.data.ownerId
+                        && request.resource.data.get('entitlements', null)
+                             == resource.data.get('entitlements', null));
+
+      allow delete: if isSuperAdmin();
+    }
+
+    // Suscripciones de los dueños con EasyGym. Las escribe el webhook.
+    match /subscriptions/{subId} {
+      allow get, list: if isSuperAdmin()
+                       || (resource.data.gymId is string && isOwnerOf(resource.data.gymId));
+      // ▸ PRODUCCIÓN: `if false`. Solo el Admin SDK desde el webhook.
+      allow write: if isSuperAdmin();
+    }
+
+    // Usuarios de la plataforma.
+    match /users/{uid} {
+      allow get: if isAuthenticated()
+                 && (request.auth.uid == uid || isSuperAdmin() || canReadTenantDoc());
+      allow list: if isSuperAdmin() || isManagerOf(resource.data.gymId);
+
+      allow create: if isSuperAdmin()
+                    // Alta del OWNER en el registro self-service: solo su
+                    // propio documento y solo con rol OWNER.
+                    || (isAuthenticated()
+                        && request.auth.uid == uid
+                        && request.resource.data.role == 'OWNER'
+                        && request.resource.data.uid == uid)
+                    // Un manager da de alta empleados de SU gimnasio, nunca
+                    // un SUPERADMIN.
+                    || (isManagerOf(request.resource.data.gymId)
+                        && subscriptionAllowsWrites(request.resource.data.gymId)
+                        && request.resource.data.role in ['ADMIN', 'RECEPCIONISTA', 'ENTRENADOR', 'MEMBER']);
+
+      allow update: if isSuperAdmin()
+                    // El propio usuario edita su perfil. NO su rol ni su
+                    // gymId: cambiarse el gymId sería saltar a otro gimnasio.
+                    || (request.auth.uid == uid
+                        && request.resource.data.role == resource.data.role
+                        && request.resource.data.gymId == resource.data.gymId
+                        && request.resource.data.get('memberId', null)
+                             == resource.data.get('memberId', null))
+                    // Un manager administra a los empleados de su gimnasio,
+                    // sin poder moverlos a otro ni ascenderlos a SUPERADMIN.
+                    || (isManagerOf(resource.data.gymId)
+                        && request.resource.data.gymId == resource.data.gymId
+                        && request.resource.data.role in ['ADMIN', 'RECEPCIONISTA', 'ENTRENADOR', 'MEMBER']
+                        && resource.data.role != 'SUPERADMIN');
+
+      allow delete: if isSuperAdmin()
+                    || (isManagerOf(resource.data.gymId) && resource.data.role != 'OWNER');
+    }
+
+    // Bitácora de plataforma (resumen legible).
+    match /activity/{id} {
+      allow read: if isSuperAdmin();
+      // ▸ PRODUCCIÓN: `if false`.
+      allow create: if isAuthenticated();
+      allow update, delete: if false;
+    }
+
+    // Auditoría detallada: quién hizo qué, cuándo y sobre qué gimnasio.
+    //
+    // NUNCA se edita ni se borra, ni siquiera por el SUPERADMIN: una bitácora
+    // que el auditado puede modificar no sirve como bitácora.
+    match /auditLogs/{id} {
+      allow get, list: if isSuperAdmin()
+                       || (resource.data.gymId is string && isManagerOf(resource.data.gymId));
+      // ▸ PRODUCCIÓN: `if false`. Los escribe functions/src/audit.ts
+      allow create: if isSuperAdmin()
+                    || (request.resource.data.gymId is string
+                        && belongsToGym(request.resource.data.gymId));
+      allow update, delete: if false;
+    }
+
+    // Contadores de la limitación de peticiones.
+    //
+    // CERRADA POR COMPLETO. Solo la toca el Admin SDK desde
+    // functions/src/rateLimit.ts, y es lo único que tiene sentido: un
+    // limitador cuyo contador puede reiniciar el limitado no limita nada.
+    //
+    // Tampoco se puede leer: saber cuánto cupo queda es información útil
+    // únicamente para quien quiera agotarlo justo por debajo del tope.
+    match /rateLimits/{key} {
+      allow read, write: if false;
+    }
+
+    // ═══════════════════ 6 · Agregados (datos derivados) ══════════════════
+    //
+    // ▸ PRODUCCIÓN: `allow write: if false`. Los mantienen los triggers de
+    //   functions/src/aggregates.ts con FieldValue.increment().
+    //
+    //   Mientras el cliente pueda escribirlos, un empleado podría inventarse
+    //   1 000 socios o medio millón de ventas en SU gimnasio. El daño está
+    //   acotado a su tenant y se corrige recalculando, pero es deuda real.
+
+    match /counters/{gymId} {
+      allow read: if isAuthenticated() && (isSuperAdmin() || belongsToGym(gymId));
+      allow write: if isSuperAdmin() || isStaffOf(gymId);
+    }
+
+    match /dailyStats/{statId} {
+      allow read: if canReadTenantDoc();
+      allow create, update: if isSuperAdmin()
+                            || (request.resource.data.gymId is string
+                                && belongsToGym(request.resource.data.gymId));
+      allow delete: if isSuperAdmin();
+    }
+
+    // ══════════ 7 · Colecciones del gimnasio (todas llevan gymId) ═════════
+
+    // Socios. El propio socio puede leerse a sí mismo (portal).
+    // La creación comprueba además el LÍMITE DE SOCIOS del plan: es lo que
+    // impide que un Starter cargue 5 000 socios saltándose la interfaz.
+    match /members/{memberId} {
+      allow read: if canReadTenantDoc() || isSelfMember(memberId);
+
+      allow create: if isSuperAdmin()
+                    || (canCreateIn('members')
+                        && isStaffOf(request.resource.data.gymId)
+                        && underMemberLimit(request.resource.data.gymId));
+
+      allow update: if isSuperAdmin()
+                    || (isStaffOf(resource.data.gymId)
+                        && canWriteExisting('members')
+                        && gymIdUnchanged())
+                    // El socio edita SU perfil, nunca su vigencia ni su estado:
+                    // si pudiera, se regalaría membresías.
+                    || (isSelfMember(memberId)
+                        && gymIdUnchanged()
+                        && request.resource.data.status == resource.data.status
+                        && request.resource.data.membershipId == resource.data.membershipId
+                        && request.resource.data.expiresAt == resource.data.expiresAt
+                        && request.resource.data.memberNumber == resource.data.memberNumber);
+
+      allow delete: if isSuperAdmin() || isManagerOf(resource.data.gymId);
+    }
+
+    // Catálogo de membresías del gimnasio.
+    match /membershipPlans/{id} {
+      allow read: if canReadTenantDoc()
+                  || (isAuthenticated() && belongsToGym(resource.data.gymId));
+      allow create: if isSuperAdmin()
+                    || (canCreateIn('memberships') && isManagerOf(request.resource.data.gymId));
+      allow update: if isSuperAdmin()
+                    || (isManagerOf(resource.data.gymId) && canWriteExisting('memberships') && gymIdUnchanged());
+      allow delete: if isSuperAdmin() || isManagerOf(resource.data.gymId);
+    }
+
+    // Contratos de membresía de los socios.
+    match /memberships/{id} {
+      allow read: if canReadTenantDoc()
+                  || (resource.data.memberId is string && isSelfMember(resource.data.memberId));
+      allow create: if isSuperAdmin()
+                    || (canCreateIn('memberships') && isStaffOf(request.resource.data.gymId));
+      allow update: if isSuperAdmin()
+                    || (isStaffOf(resource.data.gymId) && canWriteExisting('memberships') && gymIdUnchanged());
+      allow delete: if isSuperAdmin() || isManagerOf(resource.data.gymId);
+    }
+
+    // Pagos SOCIO → GIMNASIO.
+    // Un pago con tarjeta lo confirma el webhook (Admin SDK), nunca el cliente:
+    // por eso `method != 'stripe'` en la creación desde el navegador.
+    // Un entrenador no cobra: solo OWNER, ADMIN y RECEPCIONISTA.
+    match /payments/{id} {
+      allow read: if canReadTenantDoc()
+                  || (resource.data.memberId is string && isSelfMember(resource.data.memberId));
+      allow create: if isSuperAdmin()
+                    || (canCreateIn('manualPayments')
+                        && isCashierOf(request.resource.data.gymId)
+                        && request.resource.data.method != 'stripe'
+                        && request.resource.data.amount is number
+                        && request.resource.data.amount >= 0);
+      allow update: if isSuperAdmin()
+                    || (isManagerOf(resource.data.gymId) && gymIdUnchanged());
+      allow delete: if isSuperAdmin() || isOwnerOf(resource.data.gymId);
+    }
+
+    // Visitas: pase de un día. No requieren membresía ni socio.
+    match /visits/{id} {
+      allow read: if canReadTenantDoc();
+      allow create: if isSuperAdmin()
+                    || (canCreateIn('visits') && isCashierOf(request.resource.data.gymId));
+      allow update: if isSuperAdmin()
+                    || (isManagerOf(resource.data.gymId) && gymIdUnchanged());
+      allow delete: if isSuperAdmin() || isManagerOf(resource.data.gymId);
+    }
+
+    // Asistencias.
+    match /attendance/{id} {
+      allow read: if canReadTenantDoc()
+                  || (resource.data.memberId is string && isSelfMember(resource.data.memberId));
+      allow create: if isSuperAdmin()
+                    || (canCreateIn('attendance') && isStaffOf(request.resource.data.gymId));
+      allow update: if false;  // una asistencia es un hecho: no se edita
+      allow delete: if isSuperAdmin() || isManagerOf(resource.data.gymId);
+    }
+
+    // Clases.
+    match /classes/{id} {
+      allow read: if canReadTenantDoc()
+                  || (isAuthenticated() && belongsToGym(resource.data.gymId));
+      allow create: if isSuperAdmin()
+                    || (canCreateIn('classes') && isTrainerOf(request.resource.data.gymId));
+      allow update: if isSuperAdmin()
+                    || (isTrainerOf(resource.data.gymId) && canWriteExisting('classes') && gymIdUnchanged());
+      allow delete: if isSuperAdmin() || isManagerOf(resource.data.gymId);
+    }
+
+    // Bicicletas de spinning.
+    match /bikes/{id} {
+      allow read: if canReadTenantDoc()
+                  || (isAuthenticated() && belongsToGym(resource.data.gymId));
+      allow create: if isSuperAdmin()
+                    || (canCreateIn('spinningMap') && isTrainerOf(request.resource.data.gymId));
+      allow update: if isSuperAdmin()
+                    || (isTrainerOf(resource.data.gymId) && canWriteExisting('spinningMap') && gymIdUnchanged());
+      allow delete: if isSuperAdmin() || isManagerOf(resource.data.gymId);
+    }
+
+    // Reservaciones.
+    //
+    // El cupo de la clase y la unicidad de la bicicleta NO se pueden garantizar
+    // con reglas: no saben contar documentos. Eso lo hace una transacción
+    // (services/reservations.ts → reserveSlot). Lo que sí garantizan las reglas
+    // es que el plan incluya reservaciones y que el socio solo toque las suyas.
+    match /reservations/{id} {
+      allow read: if canReadTenantDoc()
+                  || (resource.data.memberId is string && isSelfMember(resource.data.memberId));
+      allow create: if isSuperAdmin()
+                    || (canCreateIn('reservations')
+                        && (isStaffOf(request.resource.data.gymId)
+                            || isSelfMember(request.resource.data.memberId)));
+      allow update: if isSuperAdmin()
+                    || (isStaffOf(resource.data.gymId) && canWriteExisting('reservations') && gymIdUnchanged())
+                    // El socio solo puede pasar SU reservación a CANCELLED.
+                    || (isSelfMember(resource.data.memberId)
+                        && gymIdUnchanged()
+                        && request.resource.data.status == 'CANCELLED');
+      allow delete: if isSuperAdmin() || isManagerOf(resource.data.gymId);
+    }
+
+    // Configuración del gimnasio. El id del documento ES el gymId.
+    match /settings/{gymId} {
+      allow read: if isAuthenticated() && (isSuperAdmin() || belongsToGym(gymId));
+      allow write: if isSuperAdmin() || (isManagerOf(gymId) && subscriptionAllowsWrites(gymId));
+    }
+
+    // Sucursales (Business).
+    match /branches/{id} {
+      allow read: if canReadTenantDoc()
+                  || (isAuthenticated() && belongsToGym(resource.data.gymId));
+      allow create: if isSuperAdmin()
+                    || (canCreateIn('multipleBranches') && isManagerOf(request.resource.data.gymId));
+      allow update: if isSuperAdmin()
+                    || (isManagerOf(resource.data.gymId) && canWriteExisting('multipleBranches') && gymIdUnchanged());
+      allow delete: if isSuperAdmin() || isManagerOf(resource.data.gymId);
+    }
+
+    // Productos del punto de venta.
+    match /products/{id} {
+      allow read: if canReadTenantDoc()
+                  || (isAuthenticated() && belongsToGym(resource.data.gymId));
+      allow create: if isSuperAdmin()
+                    || (canCreateIn('posBasic') && isStaffOf(request.resource.data.gymId));
+      allow update: if isSuperAdmin()
+                    || (isStaffOf(resource.data.gymId) && canWriteExisting('posBasic') && gymIdUnchanged());
+      allow delete: if isSuperAdmin() || isManagerOf(resource.data.gymId);
+    }
+
+    // Ventas del punto de venta.
+    match /sales/{id} {
+      allow read: if canReadTenantDoc();
+      allow create: if isSuperAdmin()
+                    || (canCreateIn('posBasic') && isCashierOf(request.resource.data.gymId));
+      allow update: if isSuperAdmin()
+                    || (isManagerOf(resource.data.gymId) && gymIdUnchanged());
+      allow delete: if isSuperAdmin() || isOwnerOf(resource.data.gymId);
+    }
+
+    // Movimientos de inventario.
+    match /inventory/{id} {
+      allow read: if canReadTenantDoc();
+      allow create: if isSuperAdmin()
+                    || (canCreateIn('inventory') && isStaffOf(request.resource.data.gymId));
+      allow update: if isSuperAdmin()
+                    || (isManagerOf(resource.data.gymId) && canWriteExisting('inventory') && gymIdUnchanged());
+      allow delete: if isSuperAdmin() || isManagerOf(resource.data.gymId);
+    }
+
+    // Notificaciones: las genera el backend, el cliente las lee y las marca.
+    match /notifications/{id} {
+      allow read: if canReadTenantDoc()
+                  || (resource.data.memberId is string && isSelfMember(resource.data.memberId));
+      allow create: if isSuperAdmin()
+                    || (canCreateIn('notifications') && isStaffOf(request.resource.data.gymId));
+      allow update: if isSuperAdmin()
+                    || (belongsToGym(resource.data.gymId)
+                        && gymIdUnchanged()
+                        && request.resource.data.diff(resource.data)
+                             .affectedKeys().hasOnly(['readAt', 'status', 'sentAt', 'updatedAt']));
+      allow delete: if isSuperAdmin() || isManagerOf(resource.data.gymId);
+    }
+
+    // ═══════════ 8 · Operación interna del gimnasio (Fase 4) ═════════════
+    //
+    // TRES CLASES DE PERSONA, TRES COLECCIONES:
+    //   `members` + `attendance`   el SOCIO entra a entrenar
+    //   `employees` + `employeeAttendance`  el EMPLEADO ficha su jornada
+    //   `visits`                   el VISITANTE compra un pase de un día
+    //
+    // La asistencia laboral es dato sensible: de ella salen los retardos y, el
+    // día de mañana, la nómina. No la ve un socio ni el de mantenimiento.
+
+    // Personal del gimnasio.
+    match /employees/{id} {
+      allow read: if canReadTenantDoc();
+      allow create: if isSuperAdmin()
+                    || (canCreateIn('employees') && isManagerOf(request.resource.data.gymId));
+      allow update: if isSuperAdmin()
+                    || (isManagerOf(resource.data.gymId)
+                        && canWriteExisting('employees')
+                        && gymIdUnchanged());
+      allow delete: if isSuperAdmin() || isManagerOf(resource.data.gymId);
+    }
+
+    // Asistencia laboral: entradas, salidas, retardos y faltas.
+    //
+    // La ESCRITURA la permite todo el personal porque el fichaje ocurre en el
+    // mostrador: el recepcionista de turno registra la entrada de quien llega
+    // sin llave. Lo que solo puede hacer un encargado es BORRAR y JUSTIFICAR
+    // una falta, que es donde se decide sobre el sueldo de otro.
+    match /employeeAttendance/{id} {
+      allow read: if canReadTenantDoc();
+      allow create: if isSuperAdmin()
+                    || (canCreateIn('employeeAttendance')
+                        && isStaffOf(request.resource.data.gymId));
+      allow update: if isSuperAdmin()
+                    || (isStaffOf(resource.data.gymId)
+                        && canWriteExisting('employeeAttendance')
+                        && gymIdUnchanged());
+      allow delete: if isSuperAdmin() || isManagerOf(resource.data.gymId);
+    }
+
+    // Lectores, controladores y torniquetes.
+    //
+    // ⚠️ ESTE DOCUMENTO LO LEE EL NAVEGADOR. Aquí NO va ninguna contraseña ni
+    //    token del aparato: eso vive en el Agente de Windows, en la máquina del
+    //    gimnasio. Lo que hay aquí es qué aparato es, dónde está y cómo se
+    //    conecta.
+    match /devices/{id} {
+      allow read: if canReadTenantDoc();
+      allow create: if isSuperAdmin()
+                    || (canCreateIn('biometrics') && isManagerOf(request.resource.data.gymId));
+      allow update: if isSuperAdmin()
+                    || (isManagerOf(resource.data.gymId)
+                        && canWriteExisting('biometrics')
+                        && gymIdUnchanged());
+      allow delete: if isSuperAdmin() || isManagerOf(resource.data.gymId);
+    }
+
+    // Eventos de los aparatos. APPEND-ONLY, como la bitácora.
+    //
+    // El id del documento ES el `eventId` que generó el origen: reenviar el
+    // mismo evento sobrescribe el mismo documento en vez de crear otro. Eso es
+    // lo que hace la sincronización idempotente incluso si la cola falla.
+    //
+    // No se editan ni se borran: un registro de «quién pasó por el torniquete»
+    // que se puede retocar no sirve para lo único que sirve.
+    match /biometricEvents/{id} {
+      allow read: if canReadTenantDoc();
+      allow create: if isSuperAdmin()
+                    || (canCreateIn('biometrics') && isStaffOf(request.resource.data.gymId));
+      allow update, delete: if isSuperAdmin();
+    }
+
+    // Solicitudes de insumos.
+    //
+    // La única colección que MANTENIMIENTO puede tocar. Puede leerlas todas
+    // —tiene que ver qué hay pendiente— y moverlas de estado, pero no crear
+    // empleados ni ver un solo dato de un socio.
+    match /supplyRequests/{id} {
+      allow read: if isSuperAdmin() || (resource.data.gymId is string && worksAt(resource.data.gymId));
+      allow create: if isSuperAdmin()
+                    || (canCreateIn('supplyRequests')
+                        && worksAt(request.resource.data.gymId)
+                        && request.resource.data.requestedBy == request.auth.uid
+                        && request.resource.data.quantity is number
+                        && request.resource.data.quantity > 0);
+      allow update: if isSuperAdmin()
+                    || (worksAt(resource.data.gymId)
+                        && canWriteExisting('supplyRequests')
+                        && gymIdUnchanged());
+      // El historial de qué se pidió y quién lo atendió no se borra.
+      allow delete: if isSuperAdmin();
+    }
+
+    // Avisos entre compañeros de trabajo.
+    //
+    // Distintos de `notifications`, que van del gimnasio a sus SOCIOS. Cada
+    // quien lee los suyos y los de su puesto; un encargado ve los de su
+    // gimnasio para saber qué está pasando.
+    match /internalNotifications/{id} {
+      allow read: if isSuperAdmin()
+                  || (resource.data.gymId is string
+                      && worksAt(resource.data.gymId)
+                      && (resource.data.toUserId == request.auth.uid
+                          || resource.data.toRole == myRole()
+                          || isManagerOf(resource.data.gymId)));
+      allow create: if isSuperAdmin()
+                    || (request.resource.data.gymId is string
+                        && worksAt(request.resource.data.gymId)
+                        && subscriptionAllowsWrites(request.resource.data.gymId));
+      // Solo se marca como leído. El texto del aviso no se reescribe.
+      allow update: if isSuperAdmin()
+                    || (worksAt(resource.data.gymId)
+                        && gymIdUnchanged()
+                        && request.resource.data.diff(resource.data)
+                             .affectedKeys().hasOnly(['readAt', 'updatedAt']));
+      allow delete: if isSuperAdmin() || isManagerOf(resource.data.gymId);
+    }
+
+    // Todo lo que no esté declarado arriba queda cerrado.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

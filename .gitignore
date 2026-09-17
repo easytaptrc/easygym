@@ -1,0 +1,24 @@
+node_modules
+dist
+dist-ssr
+.vite
+*.local
+.env
+.env.local
+.env.*.local
+.DS_Store
+Thumbs.db
+npm-debug.log*
+yarn-error.log*
+.firebase
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+serviceAccount*.json
+*.tsbuildinfo
+dev-dist
+
+# Cloud Functions
+functions/node_modules
+functions/lib
+functions/.env*
