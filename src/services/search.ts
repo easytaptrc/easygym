@@ -42,49 +42,90 @@ export interface SearchProvider {
 
 // ───────────────────── Implementación sobre Firestore ───────────────────────
 
+/** Solo los dígitos: "33 1234 5678" y "3312345678" son el mismo teléfono. */
+function digits(s: string): string {
+  return s.replace(/\D/g, '')
+}
+
 class FirestorePrefixSearch implements SearchProvider {
   readonly capabilities: SearchCapabilities = {
     engine: 'Firestore (prefijo)',
     fullText: false,
     typoTolerant: false,
-    searchableFields: ['name', 'memberNumber'],
+    searchableFields: ['name', 'memberNumber', 'phone', 'email'],
   }
 
   async searchMembers(repo: TenantRepo, term: string, limit = 30): Promise<MemberSearchResult[]> {
-    const q = norm(term.trim())
+    const raw = term.trim()
+    const q = norm(raw)
     if (!q) return []
 
     const results: MemberSearchResult[] = []
     const seen = new Set<string>()
+    const push = (m: Member, matchedOn: MemberSearchResult['matchedOn']) => {
+      if (seen.has(m.id)) return
+      seen.add(m.id)
+      results.push({ member: m, matchedOn })
+    }
 
-    // Un término puramente numérico casi siempre es el número de socio.
-    if (/^\d+$/.test(q)) {
+    const soloDigitos = digits(raw)
+    const esNumero = /^\d+$/.test(q)
+
+    // Un término numérico puede ser DOS cosas, y hay que probar las dos: el
+    // número de socio (corto, "42") o el teléfono (largo).
+    if (esNumero) {
       const byNumber = await repo.list('members', {
         where: [{ field: 'memberNumber', op: '==', value: Number(q) }],
         limit: 5,
       })
-      for (const m of byNumber) {
-        if (!seen.has(m.id)) {
-          seen.add(m.id)
-          results.push({ member: m, matchedOn: 'memberNumber' })
-        }
-      }
+      for (const m of byNumber) push(m, 'memberNumber')
     }
 
-    // Prefijo de nombre, resuelto en el servidor con un rango.
-    const byName = await repo.list('members', {
-      where: [
-        { field: 'searchKey', op: '>=', value: q },
-        { field: 'searchKey', op: '<=', value: `${q}` },
-      ],
-      orderBy: { field: 'searchKey', dir: 'asc' },
-      limit,
-    })
-    for (const m of byName) {
-      if (!seen.has(m.id)) {
-        seen.add(m.id)
-        results.push({ member: m, matchedOn: 'name' })
-      }
+    // TELÉFONO. En el mostrador es la vía más rápida: el socio llega sin
+    // credencial y lo único que recuerda es su número.
+    //
+    // Por PREFIJO, para que sirva tecleando a medias, y sobre los dígitos
+    // solos: la gente escribe el teléfono con espacios y guiones, y guardarlo
+    // de una forma y buscarlo de otra es la manera segura de que «no aparezca
+    // nadie» con el dato correcto delante.
+    if (soloDigitos.length >= 3) {
+      const byPhone = await repo.list('members', {
+        where: [
+          { field: 'phone', op: '>=', value: soloDigitos },
+          { field: 'phone', op: '<=', value: soloDigitos + '\uf8ff' },
+        ],
+        orderBy: { field: 'phone', dir: 'asc' },
+        limit,
+      })
+      for (const m of byPhone) push(m, 'phone')
+    }
+
+    // CORREO, también por prefijo: basta con teclear lo de antes de la arroba.
+    if (!esNumero && q.length >= 3) {
+      const email = raw.toLowerCase()
+      const byEmail = await repo.list('members', {
+        where: [
+          { field: 'email', op: '>=', value: email },
+          { field: 'email', op: '<=', value: email + '\uf8ff' },
+        ],
+        orderBy: { field: 'email', dir: 'asc' },
+        limit,
+      })
+      for (const m of byEmail) push(m, 'email')
+    }
+
+    // NOMBRE por prefijo. Sigue sin encontrar «María Herrera» tecleando
+    // «herrera»: eso necesita un índice invertido, no más código aquí.
+    if (!esNumero) {
+      const byName = await repo.list('members', {
+        where: [
+          { field: 'searchKey', op: '>=', value: q },
+          { field: 'searchKey', op: '<=', value: q + '\uf8ff' },
+        ],
+        orderBy: { field: 'searchKey', dir: 'asc' },
+        limit,
+      })
+      for (const m of byName) push(m, 'name')
     }
 
     return results.slice(0, limit)
@@ -138,5 +179,5 @@ export function searchMembers(repo: TenantRepo, term: string, limit?: number) {
 export function searchHint(): string {
   const c = searchProvider.capabilities
   if (c.fullText) return 'Busca por nombre, teléfono, correo o número de socio.'
-  return 'La búsqueda encuentra por el principio del nombre o por número de socio.'
+  return 'Busca por nombre, teléfono, correo o número de socio. Encuentra por el principio de cada dato.'
 }

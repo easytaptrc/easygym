@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, ArrowRight, Building2, Check, CreditCard, Lock, User } from 'lucide-react'
 import type { PlanId } from '@/types'
 import { usePlans } from '@/state/PlansContext'
@@ -400,9 +400,9 @@ export default function Register() {
 
         <p className="mt-5 text-center text-[12.5px] text-ink-500">
           ¿Ya tienes cuenta?{' '}
-          <a href="/login" className="font-semibold text-gym hover:underline">
+          <Link to="/login" className="font-semibold text-gym hover:underline">
             Inicia sesión
-          </a>
+          </Link>
         </p>
       </main>
     </div>

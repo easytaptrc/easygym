@@ -233,7 +233,7 @@ export default function Dashboard() {
       </div>
 
       {/* ── KPIs ── */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 [&>*]:min-w-0">
         <StatTile
           label="Ingresos"
           value={rollup.revenueTotal}
@@ -269,7 +269,7 @@ export default function Dashboard() {
         />
       </div>
 
-      <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4 [&>*]:min-w-0">
         <StatTile
           label="Nuevas membresías"
           value={rollup.newMemberships}
@@ -303,7 +303,7 @@ export default function Dashboard() {
       </div>
 
       {/* ── Gráficas ── */}
-      <div className="mt-3 grid gap-3 lg:grid-cols-[1.6fr_1fr]">
+      <div className="mt-3 grid gap-3 lg:grid-cols-[1.6fr_1fr] [&>*]:min-w-0">
         <Card lit>
           <CardHeader
             title="Ingresos"
@@ -340,7 +340,7 @@ export default function Dashboard() {
         </Card>
       </div>
 
-      <div className="mt-3 grid gap-3 lg:grid-cols-[1fr_1fr_1fr]">
+      <div className="mt-3 grid gap-3 lg:grid-cols-[1fr_1fr_1fr] [&>*]:min-w-0">
         <Card>
           <CardHeader title="Tus socios" subtitle={`${num(breakdown.total)} en total`} icon={<Users className="h-4 w-4" />} />
           <CardBody className="space-y-3.5">
@@ -414,7 +414,7 @@ export default function Dashboard() {
       </div>
 
       {/* ── Acción del día ── */}
-      <div className="mt-3 grid gap-3 lg:grid-cols-[1.3fr_1fr]">
+      <div className="mt-3 grid gap-3 lg:grid-cols-[1.3fr_1fr] [&>*]:min-w-0">
         <Card>
           <CardHeader
             title="Llama a estos socios hoy"
@@ -464,7 +464,12 @@ export default function Dashboard() {
         <div className="space-y-3">
           <Card>
             <CardHeader title="Atajos" subtitle="Lo que más se usa en el mostrador" />
-            <CardBody className="grid grid-cols-2 gap-2">
+            {/* grid-cols-2 crea pistas `1fr` cuyo mínimo es su contenido: en un
+                teléfono de 375px, "Registrar pago" no cabía y empujaba la
+                tarjeta 20px fuera de la pantalla, arrastrando a toda la
+                página a un scroll horizontal. `minmax(0,1fr)` deja que la
+                pista encoja; `min-w-0` deja que el texto se recorte. */}
+            <CardBody className="grid grid-cols-[repeat(2,minmax(0,1fr))] gap-2">
               {[
                 { to: '/recepcion', icon: ScanLine, label: 'Recepción', tone: 'text-gym' },
                 { to: '/socios', icon: UserPlus, label: 'Nuevo socio', tone: 'text-cyber-400' },
@@ -474,10 +479,10 @@ export default function Dashboard() {
                 <Link
                   key={a.to}
                   to={a.to}
-                  className="group flex flex-col gap-2 rounded-xl border border-white/[.07] bg-white/[.02] p-3.5 transition-all duration-200 hover:-translate-y-0.5 hover:border-white/[.16] hover:bg-white/[.05]"
+                  className="group flex min-w-0 flex-col gap-2 rounded-xl border border-white/[.07] bg-white/[.02] p-3.5 transition-all duration-200 hover:-translate-y-0.5 hover:border-white/[.16] hover:bg-white/[.05]"
                 >
-                  <a.icon className={cx('h-[18px] w-[18px]', a.tone)} />
-                  <span className="text-[12.5px] font-medium text-ink-200">{a.label}</span>
+                  <a.icon className={cx('h-[18px] w-[18px] shrink-0', a.tone)} />
+                  <span className="truncate text-[12.5px] font-medium text-ink-200">{a.label}</span>
                 </Link>
               ))}
             </CardBody>
@@ -512,7 +517,7 @@ export default function Dashboard() {
       <Card className="mt-3">
         <CardHeader title="Desglose de ventas" subtitle={range.label} />
         <CardBody>
-          <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-5">
+          <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-5 [&>*]:min-w-0">
             {CATEGORY_ORDER.map((c) => (
               <div key={c} className="rounded-xl border border-white/[.06] bg-ink-950/40 p-3.5">
                 <div className="flex items-center gap-2">

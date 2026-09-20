@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { ArrowRight, KeyRound, LogIn, RotateCcw, Zap } from 'lucide-react'
 import { BRAND } from '@/config/brand'
 import { reportError } from '@/lib/errors'
@@ -136,9 +136,9 @@ export default function Login() {
 
           <p className="mt-5 text-center text-[12.5px] text-ink-500">
             ¿Todavía no tienes gimnasio?{' '}
-            <a href="/registro" className="font-semibold text-gym hover:underline">
+            <Link to="/registro" className="font-semibold text-gym hover:underline">
               Créalo en 2 minutos
-            </a>
+            </Link>
           </p>
         </div>
 

@@ -114,7 +114,18 @@ export const router = createBrowserRouter([
           </RequireAuth>
         ),
         children: [
-          { path: '/dashboard', element: <Dashboard /> },
+          {
+            // El panel enseña los INGRESOS del gimnasio. Sin este guardián, un
+            // entrenador o un recepcionista escribía /dashboard a mano y veía
+            // la facturación del mes: el menú lo escondía, pero la ruta no lo
+            // impedía. Esconder no es proteger.
+            path: '/dashboard',
+            element: (
+              <RequirePermission permission="reports.read">
+                <Dashboard />
+              </RequirePermission>
+            ),
+          },
           {
             path: '/socios',
             element: (

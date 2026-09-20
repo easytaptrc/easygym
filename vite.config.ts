@@ -5,15 +5,23 @@ import { fileURLToPath, URL } from 'node:url'
 
 // UNA sola PWA "EasyGym" para TODOS los gimnasios.
 // El gimnasio se resuelve en runtime por gymId / slug — nunca por build.
+// BASE — el subdirectorio donde vive la aplicación.
+//
+// En GitHub Pages el sitio cuelga de /easygym/, no de la raíz del dominio.
+// Esta constante se usa en TODAS partes (assets, manifiesto, service worker):
+// cada ruta absoluta que se escape de ella apunta a la raíz del dominio, donde
+// no hay nada — iconos que no cargan, PWA que abre en un 404.
+const BASE = '/easygym/'
+
 export default defineConfig({
-  base:'/easygym/',
+  base: BASE,
   plugins: [
     react(),
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'icons/icon-192.png', 'icons/icon-512.png'],
       manifest: {
-        id: '/',
+        id: BASE,
         name: 'EasyGym — Administración de gimnasios',
         short_name: 'EasyGym',
         description:
@@ -22,22 +30,26 @@ export default defineConfig({
         background_color: '#05070A',
         display: 'standalone',
         orientation: 'portrait',
-        start_url: '/',
-        scope: '/',
+        start_url: BASE,
+        scope: BASE,
         lang: 'es-MX',
         categories: ['business', 'health', 'fitness'],
         icons: [
-          { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
-          { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
-          { src: '/icons/maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+          { src: BASE + 'icons/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+          { src: BASE + 'icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+          { src: BASE + 'icons/maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
         ],
         shortcuts: [
-          { name: 'Recepción', short_name: 'Recepción', url: '/recepcion' },
-          { name: 'Mi membresía', short_name: 'Portal', url: '/portal' },
+          { name: 'Recepción', short_name: 'Recepción', url: BASE + 'recepcion' },
+          { name: 'Mi membresía', short_name: 'Portal', url: BASE + 'portal' },
         ],
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,webp,woff2}'],
+        // Toda navegación cae en index.html: es una SPA, y sin esto el service
+        // worker deja pasar /easygym/socios a la red, donde GitHub Pages
+        // responde 404 porque ese archivo no existe.
+        navigateFallback: BASE + 'index.html',
         runtimeCaching: [
           {
             urlPattern: ({ url }) => url.origin === 'https://firestore.googleapis.com',

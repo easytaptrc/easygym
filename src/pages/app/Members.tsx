@@ -28,7 +28,7 @@ import { MemberFormModal } from './MemberFormModal'
 // como `where`, y el total sale del documento de contadores.
 //
 // BÚSQUEDA: a través de `searchProvider`, no de Firestore directamente. Hoy
-// resuelve por prefijo en el servidor —encuentra "Mar…" pero no "…herrera"— y
+// resuelve por prefijo en el servidor sobre nombre, teléfono y correo, y
 // por número de socio de forma exacta. Cambiar a Algolia o Typesense es
 // implementar esa interfaz, sin tocar esta pantalla (ver README).
 // ═══════════════════════════════════════════════════════════════════════════
@@ -82,7 +82,10 @@ export default function Members() {
   const term = query.trim()
 
   useEffect(() => {
-    if (!repo || term.length < 2) {
+    // Un dígito suelto SÍ es una búsqueda válida: el socio número 7 existe,
+    // y con el mínimo en dos caracteres era imposible encontrarlo.
+    const minimo = /^[0-9]+$/.test(term) ? 1 : 2
+    if (!repo || term.length < minimo) {
       setSearchResults(null)
       return
     }
