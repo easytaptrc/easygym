@@ -6,6 +6,7 @@ import { fileURLToPath, URL } from 'node:url'
 // UNA sola PWA "EasyGym" para TODOS los gimnasios.
 // El gimnasio se resuelve en runtime por gymId / slug — nunca por build.
 export default defineConfig({
+  base:'/easygym/',
   plugins: [
     react(),
     VitePWA({
