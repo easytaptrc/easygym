@@ -368,8 +368,12 @@ export const router = createBrowserRouter([
         ],
       },
 
-      { path: '/404', element: <NotFound /> },
-      { path: '*', element: <Navigate to="/404" replace /> },
+    { path: '/404', element: <NotFound /> },
+{ path: '*', element: <Navigate to="/404" replace /> },
     ],
   },
-])
+],
+{
+  basename: '/easygym'
+}
+)
