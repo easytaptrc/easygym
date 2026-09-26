@@ -5,6 +5,11 @@ import { AppShell } from '@/components/layout/AppShell'
 import { PortalShell } from '@/components/layout/PortalShell'
 import { SuperAdminShell } from '@/components/layout/SuperAdminShell'
 import { RedirectIfAuthed, RequireAuth, RequireFeature, RequirePermission, RequireRole } from './guards'
+import { ScrollToHash } from './ScrollToHash'
+// AppError NO va con lazy(): es la pantalla que atiende, entre otras cosas,
+// el fallo al cargar un chunk. Cargarla bajo demanda sería pedirle al
+// mecanismo roto que traiga su propia pieza de repuesto.
+import AppError from '@/pages/public/AppError'
 
 // Las pantallas se cargan bajo demanda: la landing pública no arrastra el
 // código del panel, y el portal del socio (que se usa en 4G desde un móvil)
@@ -63,9 +68,15 @@ const SuperMaintenance = lazy(() => import('@/pages/superadmin/SuperMaintenance'
 
 function Lazy() {
   return (
-    <Suspense fallback={<FullPageLoader />}>
-      <Outlet />
-    </Suspense>
+    <>
+      {/* Fuera del Suspense a propósito: tiene que seguir montado mientras la
+          pantalla de destino se descarga, que es justo cuando hay que esperar
+          a que aparezca la sección del ancla. */}
+      <ScrollToHash />
+      <Suspense fallback={<FullPageLoader />}>
+        <Outlet />
+      </Suspense>
+    </>
   )
 }
 
@@ -81,6 +92,10 @@ const STAFF_ROLES = [
 export const router = createBrowserRouter([
   {
     element: <Lazy />,
+    // Sin esto, cualquier error dentro de una ruta enseñaba el texto crudo de
+    // React Router ("Unexpected Application Error!") sobre una pantalla negra.
+    // Los errores bien tratados suben hasta aquí.
+    errorElement: <AppError />,
     children: [
       // ── Público ──────────────────────────────────────────────────────
       { path: '/', element: <Landing /> },

@@ -13,7 +13,13 @@ import { fileURLToPath, URL } from 'node:url'
 // máquina sin Java deja de ser útil como señal.
 export default defineConfig({
   resolve: {
-    alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
+    alias: {
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
+      // `virtual:pwa-register` lo inventa vite-plugin-pwa durante el build y
+      // aquí no existe. Sin este alias, importar services/appUpdate.ts en una
+      // prueba falla al resolver, y la lógica anti-bucle se quedaría sin red.
+      'virtual:pwa-register': fileURLToPath(new URL('./tests/stubs/pwa-register.ts', import.meta.url)),
+    },
   },
   test: {
     environment: 'node',

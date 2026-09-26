@@ -6,10 +6,17 @@ import { cx } from '@/lib/utils'
 import { Logo } from '@/components/ui/Logo'
 import { LinkButton } from '@/components/ui/Button'
 
+// El destino va como objeto {pathname, hash}, no como la cadena "/#funciones".
+// React Router resuelve pathname y hash por separado y les antepone el
+// basename, así que el enlace sale correcto (/easygym/#funciones) se pulse
+// desde donde se pulse: la landing, /planes o /login. El salto a la sección lo
+// hace ScrollToHash, en el router.
 const LINKS = [
-  { to: '/', label: 'Inicio' },
-  { to: '/planes', label: 'Planes' },
-  { to: '/#funciones', label: 'Funciones' },
+  { id: 'inicio', to: { pathname: '/' }, label: 'Inicio', resalta: true },
+  { id: 'planes', to: { pathname: '/planes' }, label: 'Planes', resalta: true },
+  // No se resalta: apunta a un trozo de la landing, no a una ruta. Si se
+  // resaltara, estaría encendido todo el tiempo que se esté en el inicio.
+  { id: 'funciones', to: { pathname: '/', hash: '#funciones' }, label: 'Funciones', resalta: false },
 ]
 
 export function PublicNav() {
@@ -37,15 +44,14 @@ export function PublicNav() {
 
         <ul className="ml-4 hidden items-center gap-1 md:flex">
           {LINKS.map((l) => (
-            <li key={l.to}>
+            <li key={l.id}>
               <NavLink
                 to={l.to}
+                end
                 className={({ isActive }) =>
                   cx(
                     'rounded-lg px-3 py-2 text-[13.5px] font-medium transition-colors',
-                    isActive && l.to !== '/#funciones'
-                      ? 'text-white'
-                      : 'text-ink-400 hover:text-ink-100',
+                    isActive && l.resalta ? 'text-white' : 'text-ink-400 hover:text-ink-100',
                   )
                 }
               >
@@ -75,8 +81,8 @@ export function PublicNav() {
       {open && (
         <div className="animate-fade-in border-t border-white/[.07] bg-ink-950/95 px-4 py-3 backdrop-blur-xl md:hidden">
           <ul className="space-y-1">
-            {[...LINKS, { to: '/login', label: 'Iniciar sesión' }].map((l) => (
-              <li key={l.to}>
+            {[...LINKS, { id: 'login', to: { pathname: '/login' }, label: 'Iniciar sesión', resalta: true }].map((l) => (
+              <li key={l.id}>
                 <Link
                   to={l.to}
                   onClick={() => setOpen(false)}

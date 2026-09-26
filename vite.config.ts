@@ -18,7 +18,23 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      registerType: 'autoUpdate',
+      // 'prompt', no 'autoUpdate'.
+      //
+      // Con 'autoUpdate' Workbox genera un service worker con `skipWaiting()`:
+      // al desplegar, el service worker nuevo se activa de inmediato y se
+      // adueña de las pestañas YA ABIERTAS, que siguen ejecutando el
+      // JavaScript del build anterior. En cuanto esa pestaña pide un trozo
+      // diferido —Dashboard-QZdquKOQ.js— resulta que ese archivo ya no está
+      // ni en el caché nuevo ni en GitHub Pages, porque el deploy lo sustituyó
+      // por otro con distinto hash:
+      //
+      //     Failed to fetch dynamically imported module
+      //
+      // Con 'prompt' el service worker nuevo se queda ESPERANDO. La pestaña
+      // abierta conserva su index.html, su precache y sus chunks: los tres de
+      // la misma versión. La actualización ocurre cuando la persona acepta, en
+      // una recarga limpia. Ver src/services/appUpdate.ts.
+      registerType: 'prompt',
       includeAssets: ['favicon.svg', 'icons/icon-192.png', 'icons/icon-512.png'],
       manifest: {
         id: BASE,
@@ -46,10 +62,27 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,webp,woff2}'],
+
         // Toda navegación cae en index.html: es una SPA, y sin esto el service
         // worker deja pasar /easygym/socios a la red, donde GitHub Pages
         // responde 404 porque ese archivo no existe.
         navigateFallback: BASE + 'index.html',
+        // …salvo lo que NO es una pantalla. Sin esta lista, una petición a un
+        // archivo que falta devuelve el HTML de la aplicación con estado 200:
+        // el navegador intenta ejecutar `<!doctype html>` como JavaScript y el
+        // error que sale no se parece en nada a la causa.
+        navigateFallbackDenylist: [/^\/easygym\/assets\//, /\.[a-z0-9]+$/i],
+
+        // Al activarse una versión nueva, tirar los precaches de versiones
+        // anteriores. Es seguro PORQUE el service worker nuevo solo se activa
+        // cuando ya no queda ninguna pestaña usando los archivos viejos.
+        cleanupOutdatedCaches: true,
+
+        // Explícito, aunque 'prompt' ya lo implique: que nadie lo cambie sin
+        // leer antes el comentario de arriba.
+        skipWaiting: false,
+        clientsClaim: false,
+
         runtimeCaching: [
           {
             urlPattern: ({ url }) => url.origin === 'https://firestore.googleapis.com',
